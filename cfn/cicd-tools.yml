@@ -1,0 +1,398 @@
+Description: Create a CodePipeline flow with CodeCommit, CodeBuild and CodeDeploy services building and deploying to Wordpress K8s cluster.
+
+Parameters:
+  EmailAddress:
+    Description: Email Address to be notified for Production deployment approval
+    Type: String
+  TestEnvironmentTagKey:
+    Description: The tag key you have used to tag the Test environment when launching wp-cfn-demo.yml Cloudformation
+    Type: String
+    Default: CodeDeployRole
+  ProdEnvironmentTagKey:
+    Description: The tag key you have used to tag the Prod environment when launching wp-cfn-demo.yml Cloudformation
+    Type: String
+    Default: CodeDeployRole
+  TestEnvironmentTagValue:
+    Description: The tag key you have used to tag the Test environment when launching wp-cfn-demo.yml Cloudformation
+    Type: String
+    Default: TestDeployer
+  ProdEnvironmentTagValue:
+    Description: The tag key you have used to tag the Prod environment when launching wp-cfn-demo.yml Cloudformation
+    Type: String
+    Default: ProductionDeployer
+
+Resources:
+  WordpressContainerRepository:
+    Type: "AWS::ECR::Repository"
+  WordpressArtifactS3:
+    Type: "AWS::S3::Bucket"
+  WordpressApprovalTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      Subscription:
+        - Endpoint: !Ref 'EmailAddress'
+          Protocol: email
+  CodeCommitRepo:
+    Type: "AWS::CodeCommit::Repository"
+    Properties: 
+      RepositoryDescription: Git repository to hold Wordpress CICD demo sources
+      RepositoryName:
+        Fn::Sub: WordpressCodeCommit-${AWS::StackName}
+  CodeDeployTrustRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: '1'
+            Effect: Allow
+            Principal:
+              Service:
+                - codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+  CodeDeployRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodeDeployPolicy
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Resource:
+              - '*'
+            Action:
+              - ec2:Describe*
+          - Effect: Allow
+            Resource:
+              - '*'
+            Action:
+              - autoscaling:CompleteLifecycleAction
+              - autoscaling:DeleteLifecycleHook
+              - autoscaling:DescribeLifecycleHooks
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:PutLifecycleHook
+              - autoscaling:RecordLifecycleActionHeartbeat
+      Roles:
+        - !Ref 'CodeDeployTrustRole'
+  WordpressCodeDeployApplication:
+    Type: AWS::CodeDeploy::Application    
+  WordpressCodeDeployDeploymentGroupTest:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    DependsOn: WordpressCodeDeployApplication    
+    Properties:
+      DeploymentGroupName: Test
+      ApplicationName: !Ref 'WordpressCodeDeployApplication'
+      Ec2TagFilters:
+        - Key: !Ref 'TestEnvironmentTagKey'
+          Value: !Ref 'TestEnvironmentTagValue'
+          Type: KEY_AND_VALUE        
+      ServiceRoleArn: 
+        !GetAtt 'CodeDeployTrustRole.Arn'
+  WordpressCodeDeployDeploymentGroupProd:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    DependsOn: WordpressCodeDeployApplication    
+    Properties:
+      DeploymentGroupName: Production
+      ApplicationName: !Ref 'WordpressCodeDeployApplication'      
+      Ec2TagFilters:
+        - Key: !Ref 'ProdEnvironmentTagKey'
+          Value: !Ref 'ProdEnvironmentTagValue'
+          Type: KEY_AND_VALUE        
+      ServiceRoleArn:
+        !GetAtt 'CodeDeployTrustRole.Arn'
+  CodePipelineRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName:
+        Fn::Sub: WordpressCodePipelineRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codepipeline.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        -
+          PolicyName: "CodePipelineAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:DeleteObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:ListBucket"
+                  - "s3:PutObject"
+                  - "s3:GetBucketPolicy"
+                Resource:
+                  - "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "sns:Publish"
+                Resource:                  
+                  - Fn::Sub: ${WordpressApprovalTopic}
+              -
+                Effect: "Allow"
+                Action:
+                  - "codecommit:ListBranches"
+                  - "codecommit:ListRepositories"
+                  - "codecommit:BatchGetRepositories"
+                  - "codecommit:Get*"
+                  - "codecommit:GitPull"
+                  - "codecommit:UploadArchive"
+                Resource:
+                  - "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "cloudformation:CreateChangeSet"
+                  - "cloudformation:CreateStack"
+                  - "cloudformation:CreateUploadBucket"
+                  - "cloudformation:DeleteStack"
+                  - "cloudformation:Describe*"
+                  - "cloudformation:List*"
+                  - "cloudformation:UpdateStack"
+                  - "cloudformation:ValidateTemplate"
+                  - "cloudformation:ExecuteChangeSet"
+                Resource:
+                  - "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "codebuild:StartBuild"
+                  - "codebuild:BatchGetBuilds"
+                Resource:
+                  - "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "codedeploy:*"
+                Resource:
+                  - "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "iam:PassRole"
+                Resource:
+                  - Fn::Sub: arn:aws:iam::${AWS::AccountId}:role/CloudFormationRole-${AWS::StackName}
+
+  CodeBuildRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName:
+        Fn::Sub: CodeBuildRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /service-role/
+      Policies:
+        -
+          PolicyName: "CodeBuildAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "cloudformation:Get*"
+                  - "cloudformation:Describe*"
+                  - "cloudformation:List*"
+                Resource:
+                  - "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "codecommit:ListBranches"
+                  - "codecommit:ListRepositories"
+                  - "codecommit:BatchGetRepositories"
+                  - "codecommit:Get*"
+                  - "codecommit:GitPull"
+                Resource:
+                  - Fn::Sub: arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepo}                  
+              -
+                Effect: "Allow"
+                Action:
+                  - "ec2:Describe*"
+                  - "cloudformation:ValidateTemplate"
+                  - "elasticloadbalancing:Describe*"
+                  - "autoscaling:Describe*"
+                  - "iam:Get*"
+                  - "iam:List*"
+                  - "logs:Describe*"
+                  - "logs:Get*"
+                  - "tag:Get*"
+                Resource:
+                  - "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:ListBucket"
+                Resource:
+                  - "*"     
+              -
+                Effect: "Allow"
+                Action:
+                  - "ecr:GetAuthorizationToken"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:BatchGetImage"
+                  - "ecr:BatchCheckLayerAvailability" 
+                  - "ecr:InitiateLayerUpload"
+                  - "ecr:UploadLayerPart"
+                  - "ecr:CompleteLayerUpload"
+                  - "ecr:PutImage"
+                Resource:
+                  - "*"     
+  BuildWordpressContainerProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name:
+        Fn::Sub: BuildWordpressContainer-${AWS::StackName}
+      Description: Build Wordpress docker container to be deployed
+      ServiceRole:
+        Fn::GetAtt: [ CodeBuildRole, Arn ]      
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/docker:17.09.0
+      Artifacts:
+        Type: CODEPIPELINE                
+      Source:        
+        Type: CODEPIPELINE
+        BuildSpec: build/buildspec.yml
+      TimeoutInMinutes: 15
+      EncryptionKey:
+        Fn::Sub: arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: BuildWordpressContainer-${AWS::StackName}
+
+
+  DeployPipeline:
+    Type: "AWS::CodePipeline::Pipeline"
+    Properties:
+      Name:
+        Fn::Sub: ContinuousDeliveryWordpress-${AWS::StackName}
+      RoleArn:
+          Fn::GetAtt: [ CodePipelineRole, Arn ]
+      Stages:
+        -
+          Name: Source
+          Actions:
+            -
+              Name: WordpressSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                -
+                  Name: WordpressSourcesOutput
+              Configuration:
+                BranchName: master
+                RepositoryName:
+                  Fn::Sub: WordpressCodeCommit-${AWS::StackName}
+              RunOrder: 1            
+        -
+          Name: Build
+          Actions:
+            -
+              Name: CodeBuild
+              InputArtifacts:
+                - Name: WordpressSourcesOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              OutputArtifacts:
+                -
+                  Name: WordpressBuildOutput
+              Configuration:
+                ProjectName:
+                  Ref: BuildWordpressContainerProject
+              RunOrder: 1            
+        - 
+          Name: Test
+          Actions:
+            - InputArtifacts:
+                - Name: WordpressBuildOutput
+              Name: DeployToTest
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: '1'
+                Provider: CodeDeploy
+              OutputArtifacts: []
+              Configuration:
+                ApplicationName: !Ref 'WordpressCodeDeployApplication'
+                DeploymentGroupName: !Ref 'WordpressCodeDeployDeploymentGroupTest'
+              RunOrder: 1
+        -
+          Name: Approval
+          Actions:    
+            -        
+              Name: ProdApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: 1
+                Provider: Manual
+              Configuration:
+                NotificationArn:
+                  Fn::Sub: ${WordpressApprovalTopic}
+                CustomData: Approve once Test has been completed.
+              RunOrder: 1   
+        - 
+          Name: Production
+          Actions:
+            - InputArtifacts:
+                - Name: WordpressBuildOutput
+              Name: DeployToProd
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: '1'
+                Provider: CodeDeploy
+              OutputArtifacts: []
+              Configuration:
+                ApplicationName: !Ref 'WordpressCodeDeployApplication'
+                DeploymentGroupName: !Ref 'WordpressCodeDeployDeploymentGroupProd'
+              RunOrder: 1             
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: WordpressArtifactS3
+Outputs:
+  S3Bucket:
+    Value: !Ref 'WordpressArtifactS3'
+  ContainerRepository:
+    Value: !Ref 'WordpressContainerRepository'
+  SNSTopic:
+    Value: !Ref 'WordpressApprovalTopic'

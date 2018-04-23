@@ -1,0 +1,18 @@
+version: 0.0
+os: linux
+files:
+  - source: wordpress-service-deploy.yml
+    destination: /tmp/wordpress-service-deploy.yml
+  - source: k8s_deploy.sh
+    destination: /tmp/k8s_deploy.sh
+  - source: k8s_validate.sh
+    destination: /tmp/k8s_validate.sh
+  - source: k8s_cleanup.sh
+    destination: /tmp/k8s_cleanup.sh
+hooks:
+  BeforeInstall:
+    - location: k8s_cleanup.sh
+  AfterInstall:
+    - location: k8s_deploy.sh    
+  ValidateService:
+    - location: k8s_validate.sh    

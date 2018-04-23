@@ -1,0 +1,73 @@
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    run: wordpress
+  name: wordpress
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      run: wordpress
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        run: wordpress
+    spec:
+      containers:
+      - image: <DOCKER_IMAGE_REPOSITORY>/<DOCKER_IMAGE_NAME>:<DOCKER_IMAGE_VERSION>
+        name: wordpress
+        ports:
+        - containerPort: 80
+        resources: {}
+        env:
+        - name: WORDPRESS_DB_HOST
+          value: <WORDPRESS_DB_HOST>
+        - name: WORDPRESS_DB_USER
+          value: "root"
+        - name: WORDPRESS_DB_PASSWORD
+          value: <WORDPRESS_DB_PASSWORD>
+        - name: WORDPRESS_DATABASE_NAME
+          value: "wordpress"
+        - name: MEMCACHED_HOST
+          value: "tcp://<MEMCACHED_HOST>" 
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    run: wordpress
+  name: wordpress-service
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    run: wordpress
+  type: NodePort
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: wordpress-alb
+  namespace: default
+  labels:
+    run: wordpress-alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/successCodes: 301,302,200
+spec:
+  rules:
+  - host: 
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: wordpress-service
+          servicePort: 80
